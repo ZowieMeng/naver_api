@@ -22,7 +22,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 导入业务逻辑函数
-from deploy_code.main.setp_function_code import (
+from setp_function_code import (
     get_access_token,
     get_payed_orders,
     dispatch_product_orders
