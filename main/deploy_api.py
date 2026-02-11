@@ -5,7 +5,7 @@ FastAPI 部署服务接口
 提供订单查询和发货状态上传功能
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -13,12 +13,16 @@ import uvicorn
 from datetime import datetime
 import sys
 import os
+import subprocess
+import threading
+import signal
+import time
 
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 导入业务逻辑函数
-from main.setp_function_code import (
+from deploy_code.main.setp_function_code import (
     get_access_token,
     get_payed_orders,
     dispatch_product_orders
@@ -56,7 +60,27 @@ class OrdersQueryRequest(BaseModel):
     params: dict = Field(..., description="查询参数字典")
 
 
+class UpdateDeployRequest(BaseModel):
+    """代码更新请求模型"""
+    secret_key: str = Field(..., description="安全密钥")
+    install_dependencies: bool = Field(default=True, description="是否安装依赖包")
+    restart_service: bool = Field(default=True, description="是否重启服务")
+
+
+class UpdateDeployResponse(BaseModel):
+    """代码更新响应模型"""
+    success: bool
+    git_pull_output: Optional[str] = None
+    dependencies_output: Optional[str] = None
+    restart_scheduled: Optional[bool] = None
+    message: str
+    error: Optional[str] = None
+
+
 # ==================== FastAPI 应用 ====================
+
+# 安全密钥 - 生产环境请使用环境变量
+SECRET_KEY = os.environ.get("DEPLOY_SECRET_KEY", "naver_deploy_2026")
 
 app = FastAPI(
     title="Naver Commerce Deploy API",
@@ -65,6 +89,14 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+
+# ==================== 辅助函数 ====================
+
+def restart_service_delayed():
+    """延迟 2 秒后重启服务"""
+    time.sleep(2)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 # ==================== API 端点 ====================
@@ -311,6 +343,141 @@ async def dispatch_orders_endpoint(request: DispatchRequest):
             }
         )
 
+@app.post("/api/deploy/update", tags=["Deploy"], response_model=UpdateDeployResponse)
+async def update_and_restart(request: UpdateDeployRequest):
+    """
+    更新代码并重启服务
+    
+    **功能说明:**
+    - 从 Git 远程仓库拉取最新代码
+    - 可选：安装/更新 Python 依赖包
+    - 可选：重启服务（延迟 2 秒执行）
+    
+    **安全说明:**
+    - 需要提供正确的 secret_key
+    - 默认密钥: naver_deploy_2026
+    - 生产环境请设置环境变量: DEPLOY_SECRET_KEY
+    
+    **请求示例:**
+    ```json
+    {
+        "secret_key": "naver_deploy_2026",
+        "install_dependencies": true,
+        "restart_service": true
+    }
+    ```
+    
+    **返回:**
+    - success: 是否成功
+    - git_pull_output: Git pull 输出信息
+    - dependencies_output: 依赖安装输出信息
+    - restart_scheduled: 是否已计划重启
+    - message: 操作消息
+    - error: 错误信息（如果失败）
+    """
+    try:
+        # 验证密钥
+        if request.secret_key != SECRET_KEY:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "success": False,
+                    "error": "Invalid secret key",
+                    "message": "密钥验证失败"
+                }
+            )
+        
+        result = {
+            "success": True,
+            "git_pull_output": None,
+            "dependencies_output": None,
+            "restart_scheduled": False,
+            "message": "",
+            "error": None
+        }
+        
+        # 获取项目根目录（deploy_api.py 所在目录的上上级）
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(current_dir))
+        
+        # 1. 执行 git pull
+        try:
+            git_process = subprocess.run(
+                ["git", "pull"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            result["git_pull_output"] = git_process.stdout + git_process.stderr
+            
+            if git_process.returncode != 0:
+                result["success"] = False
+                result["error"] = f"Git pull failed: {git_process.stderr}"
+                result["message"] = "代码拉取失败"
+                return JSONResponse(status_code=500, content=result)
+        
+        except subprocess.TimeoutExpired:
+            result["success"] = False
+            result["error"] = "Git pull timeout"
+            result["message"] = "Git 操作超时"
+            return JSONResponse(status_code=500, content=result)
+        
+        except Exception as e:
+            result["success"] = False
+            result["error"] = f"Git pull error: {str(e)}"
+            result["message"] = "Git 操作失败"
+            return JSONResponse(status_code=500, content=result)
+        
+        # 2. 安装依赖包（如果需要）
+        if request.install_dependencies:
+            try:
+                requirements_file = os.path.join(project_root, "requirements.txt")
+                if os.path.exists(requirements_file):
+                    pip_process = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "-r", requirements_file],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+                    result["dependencies_output"] = pip_process.stdout + pip_process.stderr
+                    
+                    if pip_process.returncode != 0:
+                        result["error"] = f"Dependency installation warning: {pip_process.stderr}"
+                else:
+                    result["dependencies_output"] = "requirements.txt not found, skipped"
+            
+            except subprocess.TimeoutExpired:
+                result["error"] = "Dependency installation timeout"
+            
+            except Exception as e:
+                result["error"] = f"Dependency installation error: {str(e)}"
+        
+        # 3. 计划重启服务（如果需要）
+        if request.restart_service:
+            # 在后台线程中延迟重启，让本次请求能够正常返回
+            restart_thread = threading.Thread(target=restart_service_delayed)
+            restart_thread.daemon = True
+            restart_thread.start()
+            result["restart_scheduled"] = True
+            result["message"] = "代码更新成功，服务将在 2 秒后重启"
+        else:
+            result["message"] = "代码更新成功，但未重启服务"
+        
+        return JSONResponse(status_code=200, content=result)
+    
+    except HTTPException:
+        raise
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "error": str(e),
+                "message": "服务更新失败"
+            }
+        )
 
 # ==================== 启动服务 ====================
 
@@ -326,6 +493,7 @@ if __name__ == "__main__":
     print("  ├─ POST /api/token              - 获取访问令牌")
     print("  ├─ POST /api/orders/payed       - 获取已付款订单")
     print("  ├─ POST /api/orders/dispatch    - 上传发货状态")
+    print("  ├─ POST /api/deploy/update      - 更新代码并重启服务")
     print("  ├─ GET  /                       - 服务状态")
     print("  └─ GET  /health                 - 健康检查")
     print("=" * 100)

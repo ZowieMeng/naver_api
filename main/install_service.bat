@@ -103,6 +103,12 @@ nssm set NaverCommerceAPI AppDirectory "%CD%"
 nssm set NaverCommerceAPI DisplayName "Naver Commerce Deploy API"
 nssm set NaverCommerceAPI Description "Naver 商城部署服务 - 订单查询与发货管理 API"
 nssm set NaverCommerceAPI Start SERVICE_AUTO_START
+
+REM 配置自动重启策略（重要！）
+nssm set NaverCommerceAPI AppExit Default Restart
+nssm set NaverCommerceAPI AppRestartDelay 2000
+
+REM 配置日志
 nssm set NaverCommerceAPI AppStdout "%CD%\logs\service.log"
 nssm set NaverCommerceAPI AppStderr "%CD%\logs\service_error.log"
 nssm set NaverCommerceAPI AppRotateFiles 1
@@ -131,7 +137,11 @@ if %errorLevel% equ 0 (
     echo     启动服务: nssm start NaverCommerceAPI
     echo     停止服务: nssm stop NaverCommerceAPI
     echo     重启服务: nssm restart NaverCommerceAPI
+    echo     查看配置: nssm get NaverCommerceAPI AppExit
     echo     卸载服务: nssm remove NaverCommerceAPI confirm
+    echo.
+    echo [√] 已配置自动重启: 当服务异常退出时将自动重启
+    echo [√] 重启延迟: 2 秒
     echo.
     echo [*] 或在 Windows 服务管理器中管理
     echo     运行: services.msc
