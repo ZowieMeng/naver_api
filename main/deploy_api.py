@@ -51,12 +51,10 @@ class DispatchOrderItem(BaseModel):
 class DispatchRequest(BaseModel):
     """发货请求模型"""
     product_orders: List[DispatchOrderItem] = Field(..., description="发货订单列表")
-    access_token: Optional[str] = Field(None, description="访问令牌（可选，不提供则自动获取）")
 
 
 class OrdersQueryRequest(BaseModel):
     """订单查询请求模型"""
-    access_token: str = Field(..., description="访问令牌")
     params: dict = Field(..., description="查询参数字典")
 
 
@@ -205,7 +203,6 @@ async def get_payed_orders_endpoint(request: OrdersQueryRequest):
     **请求参数:**
     ```json
     {
-        "access_token": "访问令牌",
         "params": {
             "from": "2024-02-10T00:00:00.000+09:00",
             "to": "2024-02-11T23:59:59.999+09:00",
@@ -225,8 +222,19 @@ async def get_payed_orders_endpoint(request: OrdersQueryRequest):
     - error: 错误信息（如果失败）
     """
     try:
+        token_result = get_access_token()
+        if not token_result['success']:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "success": False,
+                    "error": token_result['error'],
+                    "message": "自动获取 access_token 失败"
+                }
+            )
+
         result = get_payed_orders(
-            access_token=request.access_token,
+            access_token=token_result['access_token'],
             params=request.params
         )
         
@@ -289,8 +297,7 @@ async def dispatch_orders_endpoint(request: DispatchRequest):
                 "trackingNumber": "运单号2",
                 "dispatchDate": "2026-02-11T10:00:00+09:00"
             }
-        ],
-        "access_token": "访问令牌（可选）"
+        ]
     }
     ```
     
@@ -310,8 +317,7 @@ async def dispatch_orders_endpoint(request: DispatchRequest):
         
         # 调用业务逻辑函数
         result = dispatch_product_orders(
-            product_orders=product_orders,
-            access_token=request.access_token
+            product_orders=product_orders
         )
         
         if result['success']:
