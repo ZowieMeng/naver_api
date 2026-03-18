@@ -153,9 +153,22 @@ def get_payed_orders(access_token, params):
         'Accept': 'application/json',
         'Authorization': f'Bearer {access_token}'
     }
+    tz = pytz.timezone('Asia/Seoul')
+    now = datetime.datetime.now(tz)#-datetime.timedelta(days=days)
+    from_date = now - datetime.timedelta(days=1)
+    to_date = now
+    
+    # 格式化日期
+    from_date_str = from_date.isoformat(timespec='milliseconds')
+    to_date_str = to_date.isoformat(timespec='milliseconds')
+    payload = {
+        'from': from_date_str,
+        'to': to_date_str,
+    }
+    payload.update(params)
     
     try:
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=payload)
         
         if response.status_code == 200:
             data = response.json()
